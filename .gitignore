@@ -1,0 +1,15 @@
+# Entornos
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Modelos y datos (no publicar datos de participantes)
+*.pkl
+data/raw/
+data/processed/
+logs/*.csv
+
+# Sistema
+.DS_Store
