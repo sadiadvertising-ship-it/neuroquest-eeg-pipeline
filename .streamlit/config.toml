@@ -1,0 +1,19 @@
+# Backup of the options that main.py --mode dashboard already passes on the command line
+[server]
+address = "127.0.0.1"
+headless = true
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#52514e"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f4f3ef"
+textColor = "#0b0b0b"
+font = "sans serif"

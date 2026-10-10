@@ -5,264 +5,242 @@ Main entry point with command-line interface
 """
 
 import argparse
+import glob
+import os
+import re
+import subprocess
 import sys
 import time
-import os
+import webbrowser
+
 import numpy as np
-from data_acquisition import DataAcquisition
-from preprocessing import Preprocessor
-from model_training import EmotionClassifier
-from real_time_classification import run_real_time_classification
-from gui_app import run_gui
-from utils import Logger
+
 import config
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+
 
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description='EEG Emotion Classification System')
 
-    parser.add_argument('--mode', choices=['train', 'realtime', 'gui'], required=True,
-                        help='Operation mode: train, realtime or gui')
+    parser.add_argument('--mode', choices=['gui', 'record', 'train', 'realtime', 'dashboard'], required=True,
+                        help='gui: protocol with plots | record: protocol in the terminal | '
+                             'train: model from recorded sessions | realtime: live classification | '
+                             'dashboard: local web page with the sessions, the model and the live signal')
     parser.add_argument('--port', default=config.SERIAL_PORT,
                         help=f'Serial port for OpenBCI board (default: {config.SERIAL_PORT})')
+    parser.add_argument('--synthetic', action='store_true',
+                        help=f'Use the BrainFlow synthetic board instead of the Ganglion; its recordings '
+                             f'go to {config.SYNTHETIC_DIR} and never mix with real ones')
+    parser.add_argument('--participant',
+                        help='Participant code such as P03 (never a name); required to record real sessions')
     parser.add_argument('--model', default=config.MODEL_PATH,
                         help=f'Path to model file (default: {config.MODEL_PATH})')
-    parser.add_argument('--duration', type=int, default=300,
-                        help='Training duration in seconds (default: 300)')
     parser.add_argument('--model-type', choices=['svm', 'rf'], default='svm',
                         help='Model type for training (default: svm)')
-    parser.add_argument('--csv', help='Path to CSV file with pre-collected training data')
-    parser.add_argument('--csv-dir', default='data/sessions',
-                        help='Directory containing session CSVs to train from (default: data/sessions)')
-    parser.add_argument('--min-csv', type=int, default=20,
-                        help='Minimum number of CSV files required in --csv-dir to start training (default: 20)')
+    parser.add_argument('--csv', help='Train from this single session CSV instead of --csv-dir')
+    parser.add_argument('--csv-dir', default=config.SESSIONS_DIR,
+                        help=f'Directory with the session CSVs (default: {config.SESSIONS_DIR})')
+    parser.add_argument('--min-sessions', '--min-csv', dest='min_sessions', type=int, default=20,
+                        help='Minimum number of usable sessions (complete, with windows of every emotion) '
+                             'required to train (default: 20)')
+    parser.add_argument('--include-partial', action='store_true',
+                        help='Also train on sessions that were stopped or cut before the end')
+    parser.add_argument('--permutations', type=int, default=0,
+                        help='Permutation test against chance, e.g. 100 (repeats the whole evaluation N times)')
+    parser.add_argument('--web-port', type=int, default=8501, help='Port of the dashboard (default: 8501)')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.participant and not re.match(config.PARTICIPANT_PATTERN, args.participant):
+        parser.error('--participant must be a code like P03 (letters, digits, - or _, up to 16 characters), '
+                     'never a name')
+    return args
 
-def collect_training_data(serial_port):
-    """Collect training data with labeled emotions using timed protocol."""
-    print("Starting training data collection with timed protocol...")
-    print(f"Protocol: {config.SAMPLING_DURATION}s sampling + {config.REST_DURATION}s rest per emotion")
-    print(f"Rounds per emotion: {config.TRAINING_ROUNDS}")
 
-    training_data = []
-    labels = []
+def board_id(args):
+    from brainflow.board_shim import BoardIds
+    return BoardIds.SYNTHETIC_BOARD.value if args.synthetic else config.BOARD_ID
 
-    with DataAcquisition(serial_port) as daq:
-        daq.start_streaming()
-
-        for round_num in range(config.TRAINING_ROUNDS):
-            print(f"\n--- Round {round_num + 1}/{config.TRAINING_ROUNDS} ---")
-
-            for emotion in config.CLASSES:
-                # Show stimulus phase
-                print(f"🎯 STIMULUS: Show '{emotion}' stimulus now!")
-                print(f"⏱️  Sampling for {config.SAMPLING_DURATION} seconds...")
-
-                # Collect data during stimulus
-                data = daq.collect_data(config.SAMPLING_DURATION)
-                training_data.extend(data)
-                labels.extend([emotion] * len(data))
-
-                print(f"✅ Completed sampling for '{emotion}'")
-
-                # Rest phase (except after last emotion in last round)
-                if not (round_num == config.TRAINING_ROUNDS - 1 and emotion == config.CLASSES[-1]):
-                    print(f"😌 REST: {config.REST_DURATION} seconds rest period...")
-                    time.sleep(config.REST_DURATION)
-                    print("⏱️  Rest completed. Prepare next stimulus.")
-
-    print("\n🎉 Training data collection completed!")
-    print(f"Total data points collected: {len(training_data)}")
-    print(f"Labels distribution: {np.unique(labels, return_counts=True)}")
-
-    return np.array(training_data), np.array(labels)
-
-def train_model(training_data, labels, model_type, model_path):
-    """Train and evaluate the emotion classification model."""
-    print("Preprocessing training data...")
-
-    preprocessor = Preprocessor()
-    features_list = []
-
-    # Process each data window
-    for timestamp, eeg_data in training_data:
-        features = preprocessor.preprocess_window(eeg_data)
-        features_list.append(features)
-
-    features = np.array(features_list)
-
-    print("Training model...")
-
-    classifier = EmotionClassifier(model_type)
-    X_test, y_test, y_pred, y_pred_proba = classifier.train_model(features, labels)
-
-    # Evaluate model
-    results = classifier.evaluate_model(y_test, y_pred, y_pred_proba)
-
-    print("\nModel Evaluation Results:")
-    print(f"Accuracy: {results['accuracy']:.2f}")
-    print(f"Precision: {results['precision']:.2f}")
-    print(f"Recall: {results['recall']:.2f}")
-    print(f"F1-Score: {results['f1_score']:.2f}")
-
-    # Display confusion matrix
-    print("\nConfusion Matrix:")
-    cm = results['confusion_matrix']
-    print("Predicted →")
-    print("Actual ↓")
-    print(f"{'':<12} {'  '.join(f'{cls:<8}' for cls in config.CLASSES)}")
-    for i, true_cls in enumerate(config.CLASSES):
-        print(f"{true_cls:<12} {'  '.join(f'{cm[i,j]:<8}' for j in range(len(config.CLASSES)))}")
-
-    # Plot and save confusion matrix
-    classifier.plot_confusion_matrix(cm, save_path='models/confusion_matrix.png')
-
-    # Cross-validation
-    cv_scores = classifier.cross_validate(features, labels)
-    print(f"Cross-validation scores: {cv_scores}")
-    print(f"Mean CV accuracy: {cv_scores.mean():.2f} (+/- {cv_scores.std() * 2:.2f})")
-
-    # Save model
-    classifier.save_model(model_path)
-
-    return results
-
-def load_csv_training_data(csv_path):
-    """Load training data from CSV file."""
-    try:
-        import pandas as pd
-        print(f"Loading training data from {csv_path}...")
-
-        df = pd.read_csv(csv_path)
-        print(f"Loaded {len(df)} samples from CSV")
-
-        # Extract features and labels
-        feature_cols = [col for col in df.columns if col.startswith('feature_')]
-        features = df[feature_cols].values
-        labels = df['label'].values
-
-        # Convert to expected format (list of tuples with dummy timestamps)
-        training_data = [(i * 0.1, features[i]) for i in range(len(features))]
-
-        return np.array(training_data), np.array(labels)
-
-    except Exception as e:
-        print(f"Failed to load CSV data: {e}")
-        return None, None
 
 def handle_training(args):
-    """Handle training mode."""
-    try:
-        # Branch 1: Train from a directory of pre-collected session CSVs
-        if hasattr(args, 'csv_dir') and args.csv_dir:
-            csv_dir = args.csv_dir
-            if not os.path.isdir(csv_dir):
-                print(f"CSV dir not found: {csv_dir}")
-                return
+    """Evaluate with grouped cross-validation, then fit the final model on everything."""
+    from model_training import EmotionClassifier, build_report, cv_table, report_paths, save_evaluation
+    from preprocessing import feature_names
+    from sessions import load_sessions, read_header, training_windows
 
-            csv_files = sorted(
-                [os.path.join(csv_dir, f) for f in os.listdir(csv_dir) if f.lower().endswith('.csv')]
-            )
-            print(f"Found {len(csv_files)} CSV files in {csv_dir}")
-            if len(csv_files) < getattr(args, 'min_csv', 20):
-                print(f"Need at least {args.min_csv} CSV files to train. Found {len(csv_files)}. Exiting.")
-                return
+    # Synthetic sessions only enter when their folder or file is given on purpose
+    explicit = bool(args.csv) or os.path.normpath(args.csv_dir) != os.path.normpath(config.SESSIONS_DIR)
+    paths = [args.csv] if args.csv else sorted(glob.glob(os.path.join(args.csv_dir, '*.csv')))
+    print(f"Found {len(paths)} recordings in {args.csv or args.csv_dir}")
 
-            # Aggregate features and labels
-            try:
-                import pandas as pd
-            except Exception as e:
-                print(f"Pandas required to load CSVs: {e}")
-                sys.exit(1)
-
-            dfs = []
-            for path in csv_files:
-                try:
-                    df = pd.read_csv(path)
-                    dfs.append(df)
-                except Exception as e:
-                    print(f"Skipping {path}: {e}")
-
-            if not dfs:
-                print("No readable CSVs in directory. Exiting.")
-                return
-
-            df_all = pd.concat(dfs, ignore_index=True)
-            feature_cols = [c for c in df_all.columns if c.startswith('feature_')]
-            if not feature_cols or 'label' not in df_all.columns:
-                print("CSV files missing feature_ columns or label column.")
-                return
-
-            features = df_all[feature_cols].values
-            labels = df_all['label'].values
-
-            # Train model from aggregated features
-            print("Training model from session CSV features...")
-            classifier = EmotionClassifier(args.model_type)
-            X_test, y_test, y_pred, y_pred_proba = classifier.train_model(features, labels)
-
-            # Evaluate and report
-            results = classifier.evaluate_model(y_test, y_pred, y_pred_proba)
-            print("\nModel Evaluation Results (sessions):")
-            print(f"Accuracy: {results['accuracy']:.2f}")
-            print(f"Precision: {results['precision']:.2f}")
-            print(f"Recall: {results['recall']:.2f}")
-            print(f"F1-Score: {results['f1_score']:.2f}")
-
-            # Save confusion matrix
-            cm_path = 'models/confusion_matrix_sessions.png'
-            classifier.plot_confusion_matrix(results['confusion_matrix'], save_path=cm_path)
-            print(f"Confusion matrix saved to {cm_path}")
-
-            # Save model
-            classifier.save_model(args.model)
-            print("Training from sessions completed successfully!")
-            return
-
-        # Branch 2: Train from a single CSV if provided
-        training_data, labels = None, None
-        if hasattr(args, 'csv') and args.csv:
-            training_data, labels = load_csv_training_data(args.csv)
-        else:
-            # Collect training data using timed protocol
-            training_data, labels = collect_training_data(args.port)
-
-        if training_data is None or len(training_data) == 0:
-            print("No training data available. Exiting.")
-            return
-
-        # Train model (online collection path)
-        results = train_model(training_data, labels, args.model_type, args.model)
-
-        print("Training completed successfully!")
-
-    except Exception as e:
-        print(f"Training failed: {e}")
+    table, excluded = load_sessions(paths, include_partial=args.include_partial, allow_synthetic=explicit)
+    train = training_windows(table)
+    if train.empty:
+        print("No usable windows in the sessions.")
         sys.exit(1)
+
+    labels_per_session = train.groupby('session')['label'].agg(set)
+    usable = [s for s, labels in labels_per_session.items() if set(config.CLASSES) <= labels]
+    if len(usable) < args.min_sessions:
+        print(f"Need at least {args.min_sessions} usable sessions (complete, with windows of every emotion); "
+              f"found {len(usable)}. Use --min-sessions to change it.")
+        sys.exit(1)
+
+    counts = train['label'].value_counts()
+    short = [c for c in config.CLASSES if counts.get(c, 0) < config.MIN_CLASS_WINDOWS]
+    if short:
+        print(f"Too few clean windows of {', '.join(short)} (minimum {config.MIN_CLASS_WINDOWS}): "
+              f"{ {c: int(counts.get(c, 0)) for c in config.CLASSES} }")
+        sys.exit(1)
+
+    # Windows of the same participant, session or round are correlated, so a group never goes to
+    # both sides of a split. The most demanding unit available is used.
+    participants = train['participant'].fillna('').astype(str)
+    if (participants != '').all() and participants.nunique() >= 3:
+        unit, groups = 'participant', participants.to_numpy()
+    elif train['session'].nunique() >= 3:
+        unit, groups = 'session', train['session'].to_numpy()
+    else:
+        unit, groups = 'round', (train['session'] + '#' + train['round'].astype(str)).to_numpy()
+    n_groups = len(np.unique(groups))
+    if n_groups < 2:
+        print("Only one group of windows: record at least 2 sessions (or one session with 2 complete rounds).")
+        sys.exit(1)
+
+    X = train[feature_names()].to_numpy()
+    y = train['label'].to_numpy()
+    print(f"\n{len(y)} windows | { {c: int(counts.get(c, 0)) for c in config.CLASSES} } | "
+          f"test groups: {unit} ({n_groups})")
+
+    classifier = EmotionClassifier(args.model_type)
+    results = classifier.evaluate(X, y, groups, n_jobs=-1)
+    calibration = classifier.calibrate(y, results['proba'])
+    print("\nGrouped cross-validation (rule: argmax of the probabilities, the same as live):")
+    print(f"Accuracy:          {results['accuracy']:.2f}")
+    print(f"Balanced accuracy: {results['balanced_accuracy']:.2f}  (chance = {results['chance']:.2f})")
+    print(f"Macro F1:          {results['f1_macro']:.2f}")
+    print(f"Per fold:          {np.round(results['fold_scores'], 2)}")
+    print(f"Hyperparameters:   {'tuned inside each fold' if results['tuned'] else 'fixed (fewer than 4 groups)'}")
+    print(f"Confidence:        {calibration['mean_confidence_raw']:.2f} on average, "
+          f"{calibration['mean_confidence_calibrated']:.2f} after calibration (T = {calibration['temperature']:.2f}); "
+          f"accuracy {calibration['accuracy']:.2f}")
+    print("\n" + results['report'])
+
+    permutation = None
+    if args.permutations > 0:
+        print(f"Permutation test, {args.permutations} runs of the whole evaluation:")
+        null, p_value = classifier.permutation_test(
+            X, y, groups, train['session'].to_numpy(), train['block'].to_numpy(),
+            results['balanced_accuracy'], args.permutations, tune=results['tuned'])
+        if p_value is not None:
+            permutation = {'n': int(len(null)), 'p_value': p_value, 'null': null.tolist(),
+                           'null_p95': float(np.percentile(null, 95))}
+            verdict = 'above chance' if p_value <= 0.05 else 'not distinguishable from chance'
+            print(f"p = {p_value:.3f} with {len(null)} permutations: {verdict} "
+                  f"(95% of the permutations stay below {permutation['null_p95']:.2f})")
+    else:
+        print("No permutation test: this alone does not show that the model beats chance "
+              "(use --permutations 100).")
+    if unit == 'round':
+        print("Groups are rounds of the same session(s): this measures recognition inside a session already "
+              "seen, not on new people or days.")
+
+    _, _, cm_path = report_paths(args.model)
+    classifier.plot_confusion_matrix(results['confusion_matrix'], cm_path)
+    print(f"\nConfusion matrix saved to {cm_path}")
+
+    params = classifier.train(X, y, groups, tune=results['tuned'], n_jobs=-1)
+    if params:
+        print(f"Final model hyperparameters: {params}")
+
+    sessions = []
+    for session, part in train.groupby('session', sort=False):
+        whole = table[(table['session'] == session) & table['label'].isin(config.CLASSES)]
+        meta, _ = read_header(session)
+        sessions.append({'file': session, 'name': part['name'].iat[0], 'participant': part['participant'].iat[0],
+                         'board': meta.get('board', ''), 'sampling_rate': float(meta.get('sampling_rate', 0)),
+                         'windows': int(len(part)), 'emotion_windows': int(len(whole)),
+                         'rejected': int(whole['artifact'].sum()), 'onset': int(whole['onset'].sum())})
+    rates = [s['sampling_rate'] for s in sessions if s['sampling_rate']]
+    sampling_rate = max(set(rates), key=rates.count) if rates else None
+    synthetic = any(s['board'] == 'synthetic' for s in sessions)
+
+    classifier.save_model(args.model, sampling_rate=sampling_rate)
+    report = build_report(args.model, classifier, results, calibration, permutation, params, train, sessions,
+                          excluded, unit, n_groups, synthetic, sampling_rate)
+    json_path, cv_path = save_evaluation(args.model, report, cv_table(train, results, classifier.classes))
+    print(f"Evaluation saved to {json_path} and {cv_path}")
+
+
+def handle_record(args):
+    from data_acquisition import DataAcquisition
+    from sessions import record_session
+
+    if not args.synthetic and not args.participant:
+        print("Real sessions need a participant code: --participant P03")
+        sys.exit(1)
+    with DataAcquisition(args.port, board_id(args)) as daq:
+        daq.start_streaming()
+        record_session(daq, participant=args.participant, synthetic=args.synthetic)
+
 
 def handle_realtime(args):
     """Handle real-time classification mode."""
+    from real_time_classification import run_real_time_classification
+
     try:
         print("Starting real-time emotion classification...")
-        run_real_time_classification(args.model, args.port)
+        run_real_time_classification(args.model, args.port, board_id(args),
+                                     participant=args.participant, synthetic=args.synthetic)
     except FileNotFoundError as e:
         print(f"Model file not found: {e}")
         print("Please train a model first using --mode train")
         sys.exit(1)
-    except Exception as e:
+    except ValueError as e:
         print(f"Real-time classification failed: {e}")
         sys.exit(1)
 
+
 def handle_gui(args):
     """Handle GUI mode."""
-    try:
-        print("Launching GUI for EEG acquisition, FFT, and protocol-driven collection...")
-        # run_gui handles QApplication lifecycle and BoardShim session
-        run_gui(args.port)
-    except Exception as e:
-        print(f"GUI failed: {e}")
+    from gui_app import run_gui
+
+    print("Launching GUI for EEG acquisition, FFT, and protocol-driven recording...")
+    run_gui(args.port, board_id(args), args.model, participant=args.participant, synthetic=args.synthetic)
+
+
+def handle_dashboard(args):
+    """Start the Streamlit dashboard on this computer only and open it in the browser."""
+    import importlib.util
+    import urllib.request
+
+    if importlib.util.find_spec('streamlit') is None:
+        print("The dashboard needs streamlit: pip install -r requirements.txt")
         sys.exit(1)
+    url = f"http://127.0.0.1:{args.web_port}"
+    # The privacy options go on the command line too, so they hold from any working directory
+    command = [sys.executable, '-m', 'streamlit', 'run', os.path.join(REPO, 'dashboard.py'),
+               '--server.address', '127.0.0.1', '--server.port', str(args.web_port),
+               '--server.headless', 'true', '--browser.gatherUsageStats', 'false',
+               '--client.toolbarMode', 'minimal', '--server.fileWatcherType', 'none']
+    process = subprocess.Popen(command, cwd=REPO)
+    try:
+        for _ in range(120):
+            if process.poll() is not None:
+                sys.exit(process.returncode)
+            try:
+                urllib.request.urlopen(url + '/_stcore/health', timeout=1)
+                break
+            except OSError:
+                time.sleep(0.5)
+        print(f"\nDashboard at {url} (Ctrl+C to stop)")
+        webbrowser.open(url)
+        process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+
 
 def main():
     """Main function."""
@@ -271,12 +249,14 @@ def main():
     print("EEG Emotion Classification System")
     print("=" * 40)
 
-    if args.mode == 'train':
-        handle_training(args)
-    elif args.mode == 'realtime':
-        handle_realtime(args)
-    elif args.mode == 'gui':
-        handle_gui(args)
+    handlers = {'train': handle_training, 'record': handle_record, 'realtime': handle_realtime,
+                'gui': handle_gui, 'dashboard': handle_dashboard}
+    try:
+        handlers[args.mode](args)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        sys.exit(130)
+
 
 if __name__ == "__main__":
     main()
