@@ -1,133 +1,72 @@
 import numpy as np
 from scipy import signal
-from scipy.signal import welch
-try:
-    import pywt
-    PYWT_AVAILABLE = True
-except ImportError:
-    PYWT_AVAILABLE = False
-try:
-    import mne  # type: ignore[reportMissingImports]
-    from mne.preprocessing import ICA  # type: ignore[reportMissingImports]
-    MNE_AVAILABLE = True
-except Exception:
-    MNE_AVAILABLE = False
-    mne = None  # type: ignore[assignment]
-    ICA = None  # type: ignore[assignment]
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import config
 
+
+def feature_names():
+    return [f'{ch}_{band}' for ch in config.CHANNEL_NAMES for band in config.BANDS]
+
+
 class Preprocessor:
+    """
+    Pipeline of thesis Figure Arq-5:
+    band-pass 0.5-45 Hz + notch 60 Hz -> artifact flag at +-100 uV -> Hamming FFT -> log band power.
+    """
+
     def __init__(self, sampling_rate=config.SAMPLING_RATE):
         self.sampling_rate = sampling_rate
+        self.window = int(config.WINDOW_SIZE * sampling_rate)
+        self.pad = int(config.FILTER_PAD * sampling_rate)
+        bandpass = signal.butter(4, [config.BANDPASS_LOW, config.BANDPASS_HIGH], btype='band',
+                                 fs=sampling_rate, output='sos')
+        notch = signal.tf2sos(*signal.iirnotch(config.NOTCH_FREQ, Q=30, fs=sampling_rate))
+        self.sos = np.vstack([bandpass, notch])
+        self.zi = signal.sosfilt_zi(self.sos)
 
     def apply_filters(self, data):
-        """Apply bandpass and notch filters to EEG data."""
-        # Bandpass filter 1-50 Hz
-        b, a = signal.butter(4, [config.BANDPASS_LOW, config.BANDPASS_HIGH], btype='band', fs=self.sampling_rate)
-        filtered_data = signal.filtfilt(b, a, data, axis=0)
+        """
+        Causal band-pass + notch along time. data: [samples, channels].
+        Zero-phase filtfilt leaves transients at the newest edge of the window, which is the part
+        that matters in real time, so the filter runs forward only and starts from the first
+        sample's level (no step from the DC offset of the Ganglion).
+        """
+        filtered, _ = signal.sosfilt(self.sos, data, axis=0, zi=self.zi[:, :, None] * data[0])
+        return filtered
 
-        # Notch filter at 50 Hz
-        b_notch, a_notch = signal.iirnotch(config.NOTCH_FREQ, Q=30, fs=self.sampling_rate)
-        filtered_data = signal.filtfilt(b_notch, a_notch, filtered_data, axis=0)
+    def clean_window(self, raw):
+        """Filter the raw tail (pad + window) and keep only the last window."""
+        return self.apply_filters(raw)[-self.window:]
 
-        return filtered_data
+    def is_artifact(self, window):
+        """Same rule as analyze_window, on an already clean window."""
+        return bool(np.any(np.abs(window) > config.ARTIFACT_UV) or np.any(window.std(axis=0) < config.FLAT_UV))
 
-    def remove_artifacts_ica(self, data):
-        """Advanced artifact removal using ICA."""
-        if not MNE_AVAILABLE:
-            return data  # Return original data if MNE not available
+    def analyze_window(self, raw):
+        """
+        raw: last pad + window samples [samples, channels].
+        Returns (features, artifact, reason, peaks). reason is 'amplitude' when a channel goes beyond
+        +-ARTIFACT_UV, 'flat' when a channel is flat or saturated, '' otherwise; peaks is the largest
+        absolute uV of each channel in the clean window.
+        """
+        window = self.clean_window(raw)
+        peaks = np.abs(window).max(axis=0)
+        if np.any(peaks > config.ARTIFACT_UV):
+            reason = 'amplitude'
+        elif np.any(window.std(axis=0) < config.FLAT_UV):
+            reason = 'flat'
+        else:
+            reason = ''
+        return self.extract_features(window), bool(reason), reason, peaks
 
-        # Basic sanity checks to avoid ICA errors
-        n_samples, n_channels = data.shape
-        if n_channels < 2 or n_samples < max(10, getattr(config, "ICA_COMPONENTS", 1)):
-            return data
+    def extract_features(self, window):
+        """Log10 band power per channel, ordered as feature_names()."""
+        freqs, psd = signal.periodogram(window, fs=self.sampling_rate, window='hamming', axis=0)
+        df = freqs[1] - freqs[0]
+        power = np.array([psd[(freqs >= lo) & (freqs < hi)].sum(axis=0) * df
+                          for lo, hi in config.BANDS.values()])
+        return np.log10(power.T.ravel() + 1e-12)
 
-        # Create MNE Raw object
-        info = mne.create_info(ch_names=[f'ch{i}' for i in range(n_channels)],
-                               sfreq=self.sampling_rate, ch_types='eeg')
-        raw = mne.io.RawArray(data.T, info)
-
-        # Apply ICA with safe number of components
-        safe_components = max(1, min(getattr(config, "ICA_COMPONENTS", 1), n_channels - 1))
-        ica = ICA(n_components=safe_components, random_state=42)
-        ica.fit(raw)
-        ica.apply(raw, exclude=[0])  # Exclude first component as example; tune based on inspection
-
-        return raw.get_data().T
-
-    def extract_wavelet_features(self, data):
-        """Extract wavelet features using Continuous Wavelet Transform."""
-        if not PYWT_AVAILABLE:
-            return np.array([])  # Return empty if pywt not available
-        wavelet_features = []
-        # Use scale indices directly for CWT and pass sampling_period to map to Hz
-        scales = np.arange(1, 128)
-        for ch in range(data.shape[1]):
-            coeffs, freqs = pywt.cwt(
-                data[:, ch],
-                scales,
-                config.WAVELET,
-                sampling_period=1.0 / self.sampling_rate
-            )
-            wavelet_features.extend(np.mean(np.abs(coeffs), axis=1))  # Mean absolute coefficients per scale
-        return np.array(wavelet_features)
-
-    def extract_features(self, data):
-        """Extract enhanced features including statistical, PSD, and wavelet."""
-        features = {}
-
-        # Statistical features
-        features['mean'] = np.mean(data, axis=0)
-        features['variance'] = np.var(data, axis=0)
-        features['std'] = np.std(data, axis=0)
-        features['rms'] = np.sqrt(np.mean(data**2, axis=0))
-
-        # Power spectral density features
-        freqs, psd = welch(data, fs=self.sampling_rate, nperseg=256, axis=0)
-
-        # Alpha band (8-12 Hz)
-        alpha_mask = (freqs >= 8) & (freqs <= 12)
-        features['alpha_power'] = np.mean(psd[alpha_mask], axis=0)
-
-        # Beta band (13-30 Hz)
-        beta_mask = (freqs >= 13) & (freqs <= 30)
-        features['beta_power'] = np.mean(psd[beta_mask], axis=0)
-
-        # Theta band (4-7 Hz)
-        theta_mask = (freqs >= 4) & (freqs <= 7)
-        features['theta_power'] = np.mean(psd[theta_mask], axis=0)
-
-        # Alpha/Beta ratio
-        features['alpha_beta_ratio'] = features['alpha_power'] / (features['beta_power'] + 1e-10)
-
-        # Wavelet features
-        wavelet_feats = self.extract_wavelet_features(data)
-        features['wavelet'] = wavelet_feats
-
-        # Flatten features
-        feature_vector = np.concatenate([v.flatten() for v in features.values()])
-
-        return feature_vector
-
-    def preprocess_window(self, data_window):
-        """Enhanced preprocessing pipeline with ICA and wavelets."""
-        # Apply filters
-        filtered = self.apply_filters(data_window)
-
-        # Advanced artifact removal
-        clean_data = self.remove_artifacts_ica(filtered)
-
-        # Extract enhanced features
-        features = self.extract_features(clean_data)
-
-        return features
-
-    def preprocess_batch(self, data_batch, max_workers=4):
-        """Preprocess a batch of data windows in parallel."""
-        features_list = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_window = {executor.submit(self.preprocess_window, window): window for window in data_batch}
-            for future in as_completed(future_to_window):
-                features_list.append(future.result())
-        return np.array(features_list)
+    def preprocess_window(self, raw):
+        """raw: last pad + window samples [samples, channels]. Returns (features, is_artifact)."""
+        features, artifact, _, _ = self.analyze_window(raw)
+        return features, artifact

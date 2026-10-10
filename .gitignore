@@ -7,9 +7,11 @@ __pycache__/
 
 # Modelos y datos (no publicar datos de participantes)
 *.pkl
-data/raw/
-data/processed/
-logs/*.csv
+data/
+models/
+logs/
+plots/
+reports/
 
 # Sistema
 .DS_Store

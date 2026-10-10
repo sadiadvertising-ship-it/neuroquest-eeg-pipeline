@@ -1,48 +1,55 @@
-import os
-
-# Data directories
-DATA_DIR = 'data'
-
-# Configuration settings
-SERIAL_PORT = '/dev/cu.usbmodem11'  # Default serial port for OpenBCI Ganglion
-BOARD_ID = 1  # BrainFlow board ID for OpenBCI Ganglion
+# Board
+SERIAL_PORT = '/dev/cu.usbmodem11'  # BLED112 dongle of the OpenBCI Ganglion on macOS
+BOARD_ID = 1  # BrainFlow BoardIds.GANGLION_BOARD
 SAMPLING_RATE = 200  # Hz
-CHANNELS = 4  # Number of channels (Ganglion has 4)
+CHANNELS = 4
+CHANNEL_NAMES = ['Fp1', 'Fp2', 'T3', 'T4']
 
-# Preprocessing settings
-BANDPASS_LOW = 1.0  # Hz
-BANDPASS_HIGH = 50.0  # Hz
-NOTCH_FREQ = 50.0  # Hz for power line noise
+# Preprocessing (thesis, Figure Arq-5)
+BANDPASS_LOW = 0.5  # Hz
+BANDPASS_HIGH = 45.0  # Hz
+NOTCH_FREQ = 60.0  # Hz, power line in Colombia
+ARTIFACT_UV = 100.0  # a window is rejected if any channel goes beyond +-100 uV
+FLAT_UV = 0.5  # ...or if any channel is flat or saturated (filtered std below 0.5 uV)
+FILTER_PAD = 3.0  # seconds of past signal filtered along with each window to avoid edge transients
 
-# Feature extraction
-WINDOW_SIZE = 2.0  # seconds for real-time windows
-OVERLAP = 0.5  # overlap fraction
+# Feature extraction: log band power per channel -> 5 bands x 4 channels = 20 features
+WINDOW_SIZE = 2.0  # seconds
+OVERLAP = 0.5  # fraction, used when slicing recordings into windows
+BANDS = {
+    'delta': (1, 4),
+    'theta': (4, 8),
+    'alpha': (8, 13),
+    'beta': (13, 30),
+    'gamma': (30, 45),
+}
 
-# Model settings
+# Model
 MODEL_PATH = 'models/emotion_classifier.pkl'
 CLASSES = ['Happy', 'Neutral', 'Frustrated']
+MIN_CLASS_WINDOWS = 20  # training stops if a class has fewer clean windows than this
 
-# Training protocol settings
-SAMPLING_DURATION = 15.0  # seconds of sampling per emotion stimulus
-REST_DURATION = 11.0  # seconds of rest between stimuli
-TRAINING_ROUNDS = 3  # number of rounds per emotion for more data
+# Recording protocol
+SAMPLING_DURATION = 15.0  # seconds of each emotion stimulus
+REST_DURATION = 11.0  # seconds between stimuli, the last CUE_SECONDS of them announce the next emotion
+CUE_SECONDS = 3.0
+TRAINING_ROUNDS = 3  # rounds per session, each round shows every emotion once
+SHUFFLE_ORDER = True  # new emotion order each round, so the label is not tied to time in the session
+ONSET_MARGIN = 2.0  # seconds after a stimulus starts that stay out of training (a person presents it)
+REST_LABEL = 'Rest'
+CUE_LABEL = 'Cue'
+LIVE_LABEL = 'Live'
+PARTICIPANT_PATTERN = r'^[A-Za-z0-9_-]{1,16}$'  # codes like P03, never names
 
-# Advanced preprocessing settings
-ICA_COMPONENTS = 4  # Number of ICA components for artifact removal
-WAVELET = 'db4'     # Wavelet type for CWT
-WAVELET_SCALES = 'auto'  # Scales for wavelet transform
+# Folders
+SESSIONS_DIR = 'data/sessions'
+SYNTHETIC_DIR = 'data/synthetic'  # anything recorded with --synthetic, kept away from training
+LIVE_DIR = 'data/live'
+LOGS_DIR = 'logs'
 
-# Deep learning settings
-BATCH_SIZE = 32
-EPOCHS = 50
-LEARNING_RATE = 0.001
+# Real-time
+PREDICT_INTERVAL = 1.0  # seconds
+NO_DATA_SECONDS = 1.0  # without new samples for this long the signal counts as lost
 
-# Tuning settings
-TUNING_TRIALS = 20  # Number of Optuna trials for hyperparameter tuning
-
-# Logging
-LOG_FILE = 'logs/eeg_data.csv'
-LOG_HEADERS = ['timestamp', 'ch1', 'ch2', 'ch3', 'ch4', 'features', 'ground_truth', 'predicted', 'confidence']
-
-# Visualization
-PLOT_UPDATE_INTERVAL = 1.0  # seconds
+# Quality checks
+GAP_SECONDS = 0.1  # a pause between samples longer than this counts as a stall
