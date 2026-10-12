@@ -7,7 +7,7 @@ import config
 from data_acquisition import DataAcquisition
 from model_training import EmotionClassifier
 from preprocessing import Preprocessor
-from sessions import SessionRecorder, predictions_path, recording_dir
+from sessions import SessionRecorder, board_meta, predictions_path, recording_dir
 from utils import Logger, RollingBuffer
 
 
@@ -41,7 +41,8 @@ class RealTimeClassifier:
             buffer = RollingBuffer(prep.window + prep.pad, len(daq.eeg_channels), reset_after=config.NO_DATA_SECONDS)
             recorder = SessionRecorder(daq.sampling_rate, recording_dir(self.synthetic, live=True), prefix='live',
                                        participant=self.participant,
-                                       board='synthetic' if self.synthetic else 'ganglion', protocol='live')
+                                       board='synthetic' if self.synthetic else 'ganglion', protocol='live',
+                                       **board_meta(daq))
             recorder.mark(config.LIVE_LABEL, 0, 0)
             logger = Logger(predictions_path(recorder.path), self.classifier.classes, self.model_path)
             print(f"Recording to {recorder.path}, predictions to {logger.path}")

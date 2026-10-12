@@ -43,8 +43,12 @@ python main.py --mode realtime --participant P03
 
 # Panel web local
 python main.py --mode dashboard
+
+# Grabación de ruido sin nadie conectado (biblioteca de ruido de Ganglion-4 Bench): N1, N2, N3, C1, P1-P4
+python main.py --mode noise --code N1 --seconds 600 --note "entradas en corto a REF"
 ```
 
+- **Ruido.** `--mode noise` graba los segundos pedidos sin protocolo y guarda en `data/noise/` el código, la nota y el firmware en la cabecera. Cómo cablear cada código está en `paper/noise_protocol.md` del repositorio ganglion4-bench.
 - **Participante.** El código se escribe en la GUI o con `--participant` y solo acepta letras, números, `-` y `_` (por ejemplo P03). Nunca se usan nombres de personas.
 - **Placa sintética.** `--synthetic` usa la placa sintética de BrainFlow para probar sin la diadema. Esas grabaciones van a `data/synthetic` y nunca se mezclan con las reales.
 - **Puerto.** Se cambia con `--port`. Por defecto es `/dev/cu.usbmodem11`, el dongle BLED112 en macOS.
@@ -104,7 +108,7 @@ En Sesiones, Modelo y Comparar, **Preparar descarga** arma un HTML de la página
 Lo que falta comprobar con la Ganglion real, con el panel abierto:
 
 1. **Montaje.** Al parpadear, se deben mover solo Fp1 y Fp2. Al tocar cada electrodo, debe moverse su canal.
-2. **Muestras.** Graba una sesión completa. En Sesiones deben llegar cerca de 200 muestras por segundo, y la cuenta de paquetes perdidos debe tener sentido. Así se confirma cómo numera la Ganglion sus paquetes en `analysis.lost_packets`.
+2. **Muestras.** Graba una sesión completa. En Sesiones deben llegar cerca de 200 muestras por segundo, y la cuenta de paquetes perdidos debe tener sentido. La cabecera guarda el firmware que reporta BrainFlow (`# firmware=2` o `3`), y `analysis.lost_packets` cuenta según ese firmware: el 2 numera los paquetes 1-100 y 101-200 (el 0 es un paquete tras un reinicio) y el 3 los numera 0-99 y 100-199. Esa numeración se tomó del código de BrainFlow 5.12.1 y falta confirmarla con la diadema. BrainFlow 5.12.1 detecta solo el firmware; las versiones nuevas asumen el 3 si no se les dice nada, por eso la conexión pasa `other_info='fw:auto'`. Antes de actualizar BrainFlow, revisa que la cabecera siga diciendo el firmware correcto.
 3. **Duración de los bloques.** Cada bloque debe durar lo planeado: 15 s de estímulo, 8 s de reposo y 3 s de Cue.
 4. **Ventanas descartadas.** Revisa qué porcentaje se descarta. Si los parpadeos tumban más del 30 %, decide con los datos si subir `ARTIFACT_UV`, mover los electrodos o tratar el EOG. Los umbrales de ruido de 60 Hz del panel (`LINE_RATIO`, `LINE_MIN_UV` en `analysis.py`) también se ajustan con sesiones reales.
 5. **Entrenamiento.** Con 3 o más sesiones, idealmente de 3 o más personas, entrena con `--permutations 100` y lee la página Modelo.

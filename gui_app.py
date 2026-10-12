@@ -27,7 +27,7 @@ import analysis
 from data_acquisition import DataAcquisition
 from model_training import EmotionClassifier
 from preprocessing import Preprocessor
-from sessions import SessionRecorder, predictions_path, protocol_meta, protocol_steps, recording_dir
+from sessions import SessionRecorder, board_meta, predictions_path, protocol_meta, protocol_steps, recording_dir
 from utils import Logger, RollingBuffer
 
 
@@ -256,7 +256,7 @@ class EEGGui(QtWidgets.QMainWindow):
             self.recorder = SessionRecorder(self.daq.sampling_rate, recording_dir(self.synthetic),
                                             participant=participant or None,
                                             board='synthetic' if self.synthetic else 'ganglion',
-                                            **protocol_meta(steps))
+                                            **protocol_meta(steps), **board_meta(self.daq))
         except OSError as e:
             self.on_status(f"Could not create the session file: {e}")
             return

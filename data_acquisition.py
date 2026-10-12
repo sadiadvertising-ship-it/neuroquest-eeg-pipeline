@@ -1,4 +1,4 @@
-from brainflow.board_shim import BoardShim, BrainFlowInputParams
+from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 import config
 
 
@@ -15,15 +15,27 @@ class DataAcquisition:
         self.package_channel = BoardShim.get_package_num_channel(board_id)
         self.timestamp_channel = BoardShim.get_timestamp_channel(board_id)
         self.sampling_rate = BoardShim.get_sampling_rate(board_id)
+        self.firmware = None  # Ganglion firmware as BrainFlow decodes it (2 or 3), known after connecting
+        self.ganglion = board_id in (BoardIds.GANGLION_BOARD.value, BoardIds.GANGLION_NATIVE_BOARD.value)
 
     def initialize_board(self):
         """Initialize the OpenBCI board connection."""
         try:
             params = BrainFlowInputParams()
             params.serial_port = self.serial_port
+            if self.ganglion:
+                # BrainFlow 5.12.1 detects the firmware by itself and ignores this; newer releases assume
+                # firmware 3 unless told otherwise, which would decode a firmware 2 board wrongly
+                params.other_info = 'fw:auto'
             self.board = BoardShim(self.board_id, params)
             self.board.prepare_session()
-            print(f"Board initialized on port {self.serial_port}")
+            if self.ganglion:
+                try:
+                    self.firmware = int(self.board.config_board('get_firmware_version'))
+                except Exception:
+                    self.firmware = None  # the analysis then guesses it from the packet ids
+            print(f"Board initialized on port {self.serial_port}"
+                  + (f" (Ganglion firmware {self.firmware})" if self.firmware else ""))
         except Exception as e:
             raise ConnectionError(f"Failed to initialize board: {e}")
 

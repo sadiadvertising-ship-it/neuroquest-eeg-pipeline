@@ -156,11 +156,18 @@ def announce(step):
         print(f"STIMULUS: show '{step.label}' now ({step.seconds:.0f}s)")
 
 
+def board_meta(daq):
+    """Header fields that describe the board: the Ganglion firmware, which sets how packets are numbered."""
+    firmware = getattr(daq, 'firmware', None)
+    return {'firmware': firmware} if firmware else {}
+
+
 def record_session(daq, participant=None, synthetic=False):
     """Run the protocol in the terminal while recording the raw stream."""
     steps = protocol_steps()
     recorder = SessionRecorder(daq.sampling_rate, recording_dir(synthetic), participant=participant,
-                               board='synthetic' if synthetic else 'ganglion', **protocol_meta(steps))
+                               board='synthetic' if synthetic else 'ganglion', **protocol_meta(steps),
+                               **board_meta(daq))
     print(f"Recording to {recorder.path}")
     daq.read_new()  # drop what arrived while connecting
     status = 'stopped'
@@ -188,6 +195,46 @@ def record_session(daq, participant=None, synthetic=False):
     finally:
         recorder.close(status)
     print(f"Session saved: {recorder.path}")
+    return recorder.path
+
+
+NOISE_CODES = ('N1', 'N2', 'N3', 'C1', 'P1', 'P2', 'P3', 'P4')
+
+
+def record_noise(daq, code, seconds=300.0, note='', synthetic=False):
+    """
+    A timed recording with nobody connected, for the noise library of Ganglion-4 Bench (its
+    paper/noise_protocol.md says how to wire each code). Ctrl+C keeps the file, marked as stopped.
+    """
+    if code not in NOISE_CODES:
+        raise ValueError(f"Unknown code {code}; use one of {', '.join(NOISE_CODES)}")
+    folder = os.path.join(config.NOISE_DIR, 'synthetic') if synthetic else config.NOISE_DIR
+    recorder = SessionRecorder(daq.sampling_rate, folder, prefix=f'noise_{code}',
+                               board='synthetic' if synthetic else 'ganglion', protocol='noise', code=code,
+                               seconds=seconds, note=' '.join(note.split()), **board_meta(daq))
+    print(f"Recording {code} for {seconds:.0f} s to {recorder.path}")
+    daq.read_new()  # drop what arrived while connecting
+    recorder.mark('noise', 0, 0)
+    status, written = 'stopped', 0
+    try:
+        end = time.time() + seconds
+        while time.time() < end:
+            time.sleep(0.05)
+            timestamps, package, samples = daq.read_new()
+            written += recorder.write(timestamps, samples, package)
+        recorder.mark_end()
+        timestamps, package, samples = daq.read_new()
+        written += recorder.write(timestamps, samples, package)
+        status = 'completed'
+    except KeyboardInterrupt:
+        recorder.mark_end()
+        print("\nStopped: the file is kept and marked as stopped.")
+    finally:
+        recorder.close(status)
+    expected = seconds * daq.sampling_rate
+    if status == 'completed' and written < 0.9 * expected:
+        print(f"WARNING: only {written} of about {expected:.0f} samples arrived; check the board and the dongle")
+    print(f"Saved: {recorder.path}")
     return recorder.path
 
 
