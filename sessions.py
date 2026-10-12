@@ -156,11 +156,18 @@ def announce(step):
         print(f"STIMULUS: show '{step.label}' now ({step.seconds:.0f}s)")
 
 
+def board_meta(daq):
+    """Header fields that describe the board: the Ganglion firmware, which sets how packets are numbered."""
+    firmware = getattr(daq, 'firmware', None)
+    return {'firmware': firmware} if firmware else {}
+
+
 def record_session(daq, participant=None, synthetic=False):
     """Run the protocol in the terminal while recording the raw stream."""
     steps = protocol_steps()
     recorder = SessionRecorder(daq.sampling_rate, recording_dir(synthetic), participant=participant,
-                               board='synthetic' if synthetic else 'ganglion', **protocol_meta(steps))
+                               board='synthetic' if synthetic else 'ganglion', **protocol_meta(steps),
+                               **board_meta(daq))
     print(f"Recording to {recorder.path}")
     daq.read_new()  # drop what arrived while connecting
     status = 'stopped'

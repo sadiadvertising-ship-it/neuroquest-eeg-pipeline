@@ -449,6 +449,30 @@ def test_lost_packets_and_stalls():
     assert analysis.lost_packets(np.delete(ids, np.arange(40, 46)), 'ganglion') == (6, 600)
     assert analysis.lost_packets(np.full(10, -1), 'synthetic') is None
 
+
+def test_lost_packets_follow_the_ganglion_firmware():
+    """Firmware 2 numbers packets 1-100 / 101-200, firmware 3 numbers them 0-99 / 100-199 (BrainFlow)."""
+    import analysis
+
+    fw2 = np.repeat(np.arange(350) % 100 + 1, 2)  # 18-bit packets of firmware 2, wrapping 100 -> 1
+    fw3 = np.repeat(np.arange(350) % 100, 2)      # 18-bit packets of firmware 3, wrapping 99 -> 0
+    fw3_19 = np.repeat(np.arange(350) % 100 + 100, 2)
+    assert analysis.ganglion_firmware(fw2) == 2
+    assert analysis.ganglion_firmware(fw3) == 3 and analysis.ganglion_firmware(fw3_19) == 3
+    assert analysis.ganglion_firmware(fw2[:100]) is None, "less than one cycle cannot tell"
+    for ids, firmware in [(fw2, 2), (fw3, 3), (fw3_19, 3)]:
+        across = np.delete(ids, np.arange(196, 206))  # 5 packets lost across the wrap of the counter
+        before = np.delete(ids, np.arange(196, 200))  # the 2 packets just before the wrap
+        assert analysis.lost_packets(ids, 'ganglion') == (0, 700)
+        assert analysis.lost_packets(across, 'ganglion') == (10, 700)
+        assert analysis.lost_packets(across, 'ganglion', firmware) == (10, 700)
+        assert analysis.lost_packets(before, 'ganglion', firmware) == (4, 700)
+    # Read as firmware 2, a firmware 3 recording takes id 0 for a reset and misses the loss before it
+    assert analysis.lost_packets(np.delete(fw3, np.arange(196, 200)), 'ganglion', 2) == (0, 696)
+    assert analysis.lost_packets(fw2[:100], 'ganglion') is None, "unknown firmware: no count"
+    reset = np.r_[fw2[:61], 0, fw2[61:]]  # firmware 2 sends id 0 (one sample) after a reset
+    assert analysis.lost_packets(reset, 'ganglion') == (0, 701)
+
     ts = np.r_[np.arange(400) / FS, 2.5 + np.arange(400) / FS]
     timing = analysis.timing(pd.DataFrame({'timestamp': ts, 'package': np.arange(800) % 256}), FS, 'synthetic')
     stall = timing['stalls'][0]

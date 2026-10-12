@@ -343,7 +343,7 @@ def fig_timeline(df, table, info, cv, predictions):
 
     for r in range(1, len(ribbons) + 1):
         fig.update_yaxes(showgrid=False, row=r, col=1, fixedrange=True)
-    stalls = [(s['signal_at'], s['seconds']) for s in analysis.timing(df, fs, info['board'])['stalls']]
+    stalls = [(s['signal_at'], s['seconds']) for s in analysis.timing(df, fs, info['board'], info['firmware'])['stalls']]
     add_channel_rows(fig, traces, len(ribbons) + 1, spans, stalls)
     fig.update_xaxes(title_text='Tiempo desde el inicio (s)', row=n, col=1)
     fig.update_layout(height=140 * config.CHANNELS + 36 * len(ribbons) + 120, barmode='overlay', bargap=0,
@@ -569,7 +569,7 @@ def page_sessions():
         return
 
     fs = info['sampling_rate']
-    timing = analysis.timing(df, fs, info['board'])
+    timing = analysis.timing(df, fs, info['board'], info['firmware'])
     predictions = None
     predictions_path = analysis.predictions_for(info['path'])
     if predictions_path:

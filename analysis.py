@@ -67,6 +67,7 @@ def recording_info(path):
         'sampling_rate': float(meta.get('sampling_rate', config.SAMPLING_RATE)),
         'status': session_status(meta),
         'board': meta.get('board', ''),
+        'firmware': int(meta['firmware']) if meta.get('firmware', '').isdigit() else None,
         'steps': planned_steps(meta),
         'problem': format_problem(columns),
         'meta': meta,
@@ -127,13 +128,39 @@ def predictions_for(recording_path):
     return path if os.path.exists(path) else None
 
 
-def lost_packets(package, board):
+# Packet ids of the Ganglion for each compression (18 and 19 bits), as BrainFlow decodes them
+# (src/board_controller/openbci/ganglion.cpp, decompress_firmware_2/3). Firmware 2 also sends id 0, an
+# uncompressed packet after a reset.
+GANGLION_IDS = {2: ((1, 100), (101, 200)), 3: ((0, 99), (100, 199))}
+
+
+def _packet_ids(package):
+    """One id per BLE packet: both samples of a packet share it."""
+    return package[np.r_[True, package[1:] != package[:-1]]]
+
+
+def ganglion_firmware(package):
+    """
+    Firmware guessed from the packet ids when the header does not say it, or None. Only firmware 2
+    reaches 200 or wraps from 100 to 1; only firmware 3 wraps from 99 to 0 or from 199 to 100. A second
+    of recording is enough.
+    """
+    ids = _packet_ids(np.asarray(package, dtype=int))
+    pairs = set(zip(ids[:-1].tolist(), ids[1:].tolist()))
+    if 200 in ids or (100, 1) in pairs:
+        return 2
+    if (99, 0) in pairs or (199, 100) in pairs:
+        return 3
+    return None
+
+
+def lost_packets(package, board, firmware=None):
     """
     Lost samples according to BrainFlow's package counter, or None when it cannot tell.
     Synthetic board: the counter goes 0-255, one step per sample. Ganglion: every BLE packet carries an
-    id that both of its samples share, cycling 1-100 or 101-200 (0 after a reset). The Ganglion part
-    must be checked once with the real headset (README, revision with the headset).
-    Returns (lost samples, expected samples).
+    id that both of its samples share and that cycles inside its compression's range (GANGLION_IDS),
+    so `firmware` (from the recording header, or guessed from the ids) is needed. Still to confirm with
+    the real headset (README, revision with the headset). Returns (lost samples, expected samples).
     """
     package = np.asarray(package, dtype=int)
     if len(package) < 2 or (package < 0).any():
@@ -143,18 +170,24 @@ def lost_packets(package, board):
         lost = int(np.sum(np.where(steps == 0, 255, steps - 1)))
         return lost, len(package) + lost
     if board == 'ganglion':
-        ids = package[np.r_[True, package[1:] != package[:-1]]]
+        ranges = GANGLION_IDS.get(firmware or ganglion_firmware(package))
+        if ranges is None:
+            return None
+
+        def span(i):
+            return next((r for r in ranges if r[0] <= i <= r[1]), None)
+
+        ids = _packet_ids(package)
         lost = 0
         for a, b in zip(ids[:-1], ids[1:]):
-            if a == 0 or b == 0 or (a <= 100) != (b <= 100):
-                continue  # reset or a change of compression: not a loss
-            low = 1 if a <= 100 else 101
-            lost += 2 * ((b - low - (a - low) - 1) % 100)
+            if span(a) is None or span(a) != span(b):
+                continue  # a reset or a change of compression: not a loss
+            lost += 2 * int((b - a - 1) % 100)
         return lost, len(package) + lost
     return None
 
 
-def timing(df, fs, board):
+def timing(df, fs, board, firmware=None):
     """
     Duration by the clock, samples per second actually received, stalls and lost samples of a recording.
     Each stall has 'signal_at' (seconds of signal before it, the x of the timeline), 'at' (seconds of clock
@@ -166,7 +199,7 @@ def timing(df, fs, board):
     dt = np.diff(ts)
     stalls = [{'signal_at': (i + 1) / fs, 'at': float(ts[i] - ts[0]), 'seconds': float(dt[i])}
               for i in np.flatnonzero(dt > config.GAP_SECONDS)]
-    lost = lost_packets(df['package'], board) if 'package' in df else None
+    lost = lost_packets(df['package'], board, firmware) if 'package' in df else None
     return {
         'samples': n,
         'seconds': span + 1 / fs if n else 0.0,
