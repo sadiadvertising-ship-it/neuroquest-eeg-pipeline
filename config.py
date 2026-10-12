@@ -45,6 +45,7 @@ PARTICIPANT_PATTERN = r'^[A-Za-z0-9_-]{1,16}$'  # codes like P03, never names
 SESSIONS_DIR = 'data/sessions'
 SYNTHETIC_DIR = 'data/synthetic'  # anything recorded with --synthetic, kept away from training
 LIVE_DIR = 'data/live'
+NOISE_DIR = 'data/noise'  # recordings with nobody connected, for the Ganglion-4 Bench noise library
 LOGS_DIR = 'logs'
 
 # Real-time

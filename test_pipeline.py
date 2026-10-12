@@ -399,6 +399,34 @@ def test_record_warns_when_samples_stop():
         assert session_status(read_header(path)[0]) == 'completed'
 
 
+def test_noise_recording_with_synthetic_board():
+    """Noise library: a timed recording with its code and note in the header and no protocol."""
+    from sessions import record_noise
+
+    with workdir():
+        daq = DataAcquisition(board_id=-1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            daq.initialize_board()
+            daq.start_streaming()
+            try:
+                path = record_noise(daq, 'N3', seconds=2.0, note='10 kOhm\n between + and -', synthetic=True)
+                try:
+                    record_noise(daq, 'X9', seconds=0.1)
+                    raise AssertionError("an unknown code is refused")
+                except ValueError:
+                    pass
+            finally:
+                daq.stop_streaming()
+                daq.close()
+        meta, _ = read_header(path)
+        assert path.startswith(os.path.join(config.NOISE_DIR, 'synthetic', 'noise_N3_'))
+        assert meta['protocol'] == 'noise' and meta['code'] == 'N3' and meta['note'] == '10 kOhm between + and -'
+        assert session_status(meta) == 'completed'
+        df = pd.read_csv(path, comment='#')
+        expected = 2.0 * daq.sampling_rate  # the synthetic board runs at 250 Hz
+        assert set(df['label']) == {'noise'} and 0.75 * expected < len(df) <= 1.1 * expected, len(df)
+
+
 def test_realtime_with_synthetic_board():
     """A1, A11: realtime records its signal and predictions, and never classifies a frozen buffer."""
     from real_time_classification import RealTimeClassifier

@@ -43,8 +43,12 @@ python main.py --mode realtime --participant P03
 
 # Panel web local
 python main.py --mode dashboard
+
+# Grabación de ruido sin nadie conectado (biblioteca de ruido de Ganglion-4 Bench): N1, N2, N3, C1, P1-P4
+python main.py --mode noise --code N1 --seconds 600 --note "entradas en corto a REF"
 ```
 
+- **Ruido.** `--mode noise` graba los segundos pedidos sin protocolo y guarda en `data/noise/` el código, la nota y el firmware en la cabecera. Cómo cablear cada código está en `paper/noise_protocol.md` del repositorio ganglion4-bench.
 - **Participante.** El código se escribe en la GUI o con `--participant` y solo acepta letras, números, `-` y `_` (por ejemplo P03). Nunca se usan nombres de personas.
 - **Placa sintética.** `--synthetic` usa la placa sintética de BrainFlow para probar sin la diadema. Esas grabaciones van a `data/synthetic` y nunca se mezclan con las reales.
 - **Puerto.** Se cambia con `--port`. Por defecto es `/dev/cu.usbmodem11`, el dongle BLED112 en macOS.

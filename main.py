@@ -24,7 +24,7 @@ def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description='EEG Emotion Classification System')
 
-    parser.add_argument('--mode', choices=['gui', 'record', 'train', 'realtime', 'dashboard'], required=True,
+    parser.add_argument('--mode', choices=['gui', 'record', 'noise', 'train', 'realtime', 'dashboard'], required=True,
                         help='gui: protocol with plots | record: protocol in the terminal | '
                              'train: model from recorded sessions | realtime: live classification | '
                              'dashboard: local web page with the sessions, the model and the live signal')
@@ -50,6 +50,9 @@ def parse_arguments():
     parser.add_argument('--permutations', type=int, default=0,
                         help='Permutation test against chance, e.g. 100 (repeats the whole evaluation N times)')
     parser.add_argument('--web-port', type=int, default=8501, help='Port of the dashboard (default: 8501)')
+    parser.add_argument('--code', help='noise: recording code of the noise protocol (N1, N2, N3, C1, P1-P4)')
+    parser.add_argument('--seconds', type=float, default=300.0, help='noise: length of the recording (default: 300)')
+    parser.add_argument('--note', default='', help='noise: what was connected (resistor, distance, tone...)')
 
     args = parser.parse_args()
     if args.participant and not re.match(config.PARTICIPANT_PATTERN, args.participant):
@@ -185,6 +188,19 @@ def handle_record(args):
         record_session(daq, participant=args.participant, synthetic=args.synthetic)
 
 
+def handle_noise(args):
+    """A timed recording with nobody connected (noise library of Ganglion-4 Bench)."""
+    from data_acquisition import DataAcquisition
+    from sessions import NOISE_CODES, record_noise
+
+    if args.code not in NOISE_CODES:
+        print(f"Noise recordings need a code from the protocol: --code {' | '.join(NOISE_CODES)}")
+        sys.exit(1)
+    with DataAcquisition(args.port, board_id(args)) as daq:
+        daq.start_streaming()
+        record_noise(daq, args.code, args.seconds, args.note, synthetic=args.synthetic)
+
+
 def handle_realtime(args):
     """Handle real-time classification mode."""
     from real_time_classification import run_real_time_classification
@@ -249,7 +265,7 @@ def main():
     print("EEG Emotion Classification System")
     print("=" * 40)
 
-    handlers = {'train': handle_training, 'record': handle_record, 'realtime': handle_realtime,
+    handlers = {'train': handle_training, 'record': handle_record, 'noise': handle_noise, 'realtime': handle_realtime,
                 'gui': handle_gui, 'dashboard': handle_dashboard}
     try:
         handlers[args.mode](args)
