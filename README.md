@@ -1,5 +1,7 @@
 # NeuroQuest EEG pipeline
 
+[English version](README.en.md)
+
 Adquisición y clasificación de emociones (Happy, Neutral, Frustrated) con la diadema OpenBCI Ganglion (4 canales, 200 Hz). Es el componente de ingeniería del proyecto de grado NeuroQuest / NeuroUX y sigue el pipeline de la Figura Arq-5 de la tesis. Incluye un panel web local para ver las sesiones, el modelo y la señal en vivo.
 
 ## Pipeline
